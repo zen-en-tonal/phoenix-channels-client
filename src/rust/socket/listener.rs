@@ -46,6 +46,10 @@ pub(crate) struct Listener {
     state: Option<State>,
     socket_status: ObservableStatus,
     reconnect_strategy: Option<Box<dyn ReconnectStrategy>>,
+    #[cfg(feature = "native-tls")]
+    tls_identity: Option<native_tls::Identity>,
+    #[cfg(feature = "native-tls")]
+    tls_insecure: bool,
 }
 
 impl Listener {
@@ -53,6 +57,35 @@ impl Listener {
         url: Arc<Url>,
         cookies: Option<Vec<String>>,
         reconnect_strategy: Option<Box<dyn ReconnectStrategy>>,
+    ) -> Socket {
+        #[cfg(feature = "native-tls")]
+        {
+            Self::spawn_with_options(url, cookies, reconnect_strategy, None, false)
+        }
+        #[cfg(not(feature = "native-tls"))]
+        {
+            Self::spawn_with_options(url, cookies, reconnect_strategy, ())
+        }
+    }
+
+    #[cfg(feature = "native-tls")]
+    pub(crate) fn spawn_with_identity(
+        url: Arc<Url>,
+        cookies: Option<Vec<String>>,
+        reconnect_strategy: Option<Box<dyn ReconnectStrategy>>,
+        tls_identity: Option<native_tls::Identity>,
+        tls_insecure: bool,
+    ) -> Socket {
+        Self::spawn_with_options(url, cookies, reconnect_strategy, tls_identity, tls_insecure)
+    }
+
+    fn spawn_with_options(
+        url: Arc<Url>,
+        cookies: Option<Vec<String>>,
+        reconnect_strategy: Option<Box<dyn ReconnectStrategy>>,
+        #[cfg(feature = "native-tls")] tls_identity: Option<native_tls::Identity>,
+        #[cfg(feature = "native-tls")] tls_insecure: bool,
+        #[cfg(not(feature = "native-tls"))] _ignored: (),
     ) -> Socket {
         let status = ObservableStatus::new(rust::socket::Status::default());
         let (channel_spawn_tx, channel_spawn_rx) = mpsc::channel(50);
@@ -73,6 +106,10 @@ impl Listener {
             connectivity_tx,
             state: Some(State::NeverConnected),
             reconnect_strategy,
+            #[cfg(feature = "native-tls")]
+            tls_identity,
+            #[cfg(feature = "native-tls")]
+            tls_insecure,
         };
 
         let join_handle = tokio::spawn(listener.listen());
@@ -724,7 +761,16 @@ impl Listener {
         let connector = match url.scheme() {
             "ws" => Some(tokio_tungstenite::Connector::Plain),
             "wss" => {
-                let tls_con = native_tls::TlsConnector::new()
+                let mut builder = native_tls::TlsConnector::builder();
+                if let Some(identity) = &self.tls_identity {
+                    builder.identity(identity.clone());
+                }
+                if self.tls_insecure {
+                    builder.danger_accept_invalid_certs(true);
+                    builder.danger_accept_invalid_hostnames(true);
+                }
+                let tls_con = builder
+                    .build()
                     .map_err(|e| (ConnectError::from(e), reconnect))?;
                 Some(tokio_tungstenite::Connector::NativeTls(tls_con))
             }

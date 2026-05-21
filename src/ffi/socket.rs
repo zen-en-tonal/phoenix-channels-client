@@ -404,6 +404,39 @@ impl Socket {
     }
 }
 
+#[cfg(feature = "native-tls")]
+impl Socket {
+    /// Like [Socket::spawn] but also configures a client TLS identity for mTLS.
+    pub async fn spawn_with_identity(
+        mut url: Url,
+        cookies: Option<Vec<String>>,
+        reconnect_strategy: Option<Box<dyn ReconnectStrategy>>,
+        tls_identity: Option<native_tls::Identity>,
+        tls_insecure: bool,
+    ) -> Result<Arc<Self>, SpawnError> {
+        match url.scheme() {
+            "wss" | "ws" => (),
+            _ => return Err(SpawnError::UnsupportedScheme { url }),
+        }
+
+        {
+            let mut query = url.query_pairs_mut();
+            query.append_pair("vsn", PHOENIX_SERIALIZER_VSN);
+        }
+
+        let url = Arc::new(url);
+        let socket = Listener::spawn_with_identity(
+            url.clone(),
+            cookies.clone(),
+            reconnect_strategy,
+            tls_identity,
+            tls_insecure,
+        );
+
+        Ok(Arc::new(socket))
+    }
+}
+
 /// Provides an interface for controlling sleep duration while the LiveSocket is attempting to reconnect
 #[uniffi::export(callback_interface)]
 pub trait ReconnectStrategy: Send + Sync {
